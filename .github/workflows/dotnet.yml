@@ -4,46 +4,41 @@ on:
   push:
     branches:
       - main
+
 permissions:
   packages: write
   contents: read
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     environment: production
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2  # Configurar el soporte para Buildx, que permite construir imágenes de manera optimizada
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4  # Habilitar el caching para las capas de Docker y evitar que se reconstruyan siempre
-
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2  # Hacer login en GHCR usando las credenciales de GitHub
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Convert repository name to lowercase
         run: echo "REPO_LOWER=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Build and push Docker image
-        run: |
-          # Construir la imagen Docker usando el Dockerfile
-          docker build -f Dockerfile -t ghcr.io/$REPO_LOWER:latest .
-
-          # Subir la imagen construida a GHCR
-          docker push ghcr.io/$REPO_LOWER:latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ghcr.io/${{ env.REPO_LOWER }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: build-and-push
@@ -53,18 +48,19 @@ jobs:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v0.1.9
         with:
-          host: 204.168.214.142
-          username: root
-          key: nebula2000
-          port: 22
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
           script: |
             echo "Conexión exitosa al VPS"
+            REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-            docker login ghcr.io -u "andrescortesdev" -p ${{ secrets.TOKEN}} 
+            echo "${{ secrets.TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             docker pull ghcr.io/$REPO_LOWER:latest
             docker stop ${{github.event.repository.name}} || true
             docker rm ${{github.event.repository.name}} || true
 
             docker run -d --name ${{ github.event.repository.name }} \
                          -p 8090:8080 \
-                         ghcr.io/${{ github.repository }}:latest
+                         ghcr.io/$REPO_LOWER:latest
